@@ -1,12 +1,5 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { 
-  signInWithEmailAndPassword, 
-  createUserWithEmailAndPassword, 
-  signOut, 
-  onAuthStateChanged 
-} from 'firebase/auth';
-import { doc, setDoc, getDoc } from 'firebase/firestore';
-import { auth, db } from '../firebase/config';
+import { xanoClient } from '../config/xano';
 import toast from 'react-hot-toast';
 
 const AuthContext = createContext();
@@ -22,71 +15,93 @@ export const useAuth = () => {
 export const AuthProvider = ({ children }) => {
   const [currentUser, setCurrentUser] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [isAdmin, setIsAdmin] = useState(false);
-
-  const ADMIN_EMAIL = 'kennethaidan1404@gmail.com';
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (user) => {
-      setCurrentUser(user);
-      setIsAdmin(user?.email === ADMIN_EMAIL);
-      setLoading(false);
-    });
-
-    return unsubscribe;
+    checkAuthState();
   }, []);
+
+  const checkAuthState = async () => {
+    try {
+      const token = localStorage.getItem('xano_token');
+      
+      if (!token) {
+        setLoading(false);
+        return;
+      }
+
+      // Verify token and get user data
+      const userData = await xanoClient.getCurrentUser();
+      setCurrentUser(userData);
+    } catch (error) {
+      console.error('Auth check failed:', error);
+      // Clear invalid token
+      localStorage.removeItem('xano_token');
+      xanoClient.removeToken();
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const signup = async (email, password) => {
     try {
-      const { user } = await createUserWithEmailAndPassword(auth, email, password);
-      
-      // Initialize user with 2M free Builder Tokens
-      await setDoc(doc(db, 'users', user.uid), {
-        email: user.email,
-        builderTokens: 2000000, // 2M free tokens
-        claudeTokens: 0,
-        gptTokens: 0,
-        createdAt: new Date(),
-        totalUsage: 0,
-        isAdmin: user.email === ADMIN_EMAIL
-      });
-      
+      const userData = await xanoClient.signup(email, password);
+      setCurrentUser(userData);
       toast.success('Account created successfully! You received 2M free Builder Tokens.');
-      return user;
+      return userData;
     } catch (error) {
-      toast.error(error.message);
+      toast.error(error.message || 'Failed to create account');
       throw error;
     }
   };
 
   const login = async (email, password) => {
     try {
-      const { user } = await signInWithEmailAndPassword(auth, email, password);
+      const userData = await xanoClient.login(email, password);
+      setCurrentUser(userData);
       toast.success('Logged in successfully!');
-      return user;
+      return userData;
     } catch (error) {
-      toast.error(error.message);
+      toast.error(error.message || 'Failed to login');
       throw error;
     }
   };
 
   const logout = async () => {
     try {
-      await signOut(auth);
+      await xanoClient.logout();
+      setCurrentUser(null);
       toast.success('Logged out successfully!');
     } catch (error) {
-      toast.error(error.message);
+      toast.error(error.message || 'Failed to logout');
       throw error;
     }
   };
 
+  const hasPermission = (permission) => {
+    if (!currentUser) return false;
+    if (currentUser.isAdmin) return true;
+    return currentUser.permissions?.includes(permission) || false;
+  };
+
+  const isAdmin = () => {
+    return currentUser?.isAdmin || false;
+  };
+
+  const isSuperAdmin = () => {
+    return currentUser?.isAdmin || false; // Adjust based on your Xano user roles
+  };
+
   const value = {
     currentUser,
-    isAdmin,
     signup,
     login,
     logout,
-    loading
+    loading,
+    hasPermission,
+    isAdmin: isAdmin(),
+    isSuperAdmin: isSuperAdmin(),
+    userRole: currentUser?.isAdmin ? 'admin' : 'user',
+    userPermissions: currentUser?.permissions || []
   };
 
   return (

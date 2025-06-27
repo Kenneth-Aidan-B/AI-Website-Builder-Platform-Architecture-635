@@ -1,6 +1,5 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { doc, getDoc, updateDoc, onSnapshot } from 'firebase/firestore';
-import { db } from '../firebase/config';
+import { xanoClient } from '../config/xano';
 import { useAuth } from './AuthContext';
 import toast from 'react-hot-toast';
 
@@ -31,122 +30,70 @@ export const TokenProvider = ({ children }) => {
   };
 
   useEffect(() => {
-    if (!currentUser) {
-      setTokens({ builderTokens: 0, claudeTokens: 0, gptTokens: 0 });
+    if (currentUser) {
+      fetchTokenBalance();
+    } else {
+      setTokens({
+        builderTokens: 0,
+        claudeTokens: 0,
+        gptTokens: 0
+      });
       setLoading(false);
-      return;
     }
-
-    const unsubscribe = onSnapshot(
-      doc(db, 'users', currentUser.uid),
-      (doc) => {
-        if (doc.exists()) {
-          const data = doc.data();
-          setTokens({
-            builderTokens: data.builderTokens || 0,
-            claudeTokens: data.claudeTokens || 0,
-            gptTokens: data.gptTokens || 0
-          });
-        }
-        setLoading(false);
-      },
-      (error) => {
-        console.error('Error fetching tokens:', error);
-        setLoading(false);
-      }
-    );
-
-    return unsubscribe;
   }, [currentUser]);
 
+  const fetchTokenBalance = async () => {
+    try {
+      const balanceData = await xanoClient.getBalance();
+      setTokens({
+        builderTokens: balanceData.token_balance || 0,
+        claudeTokens: balanceData.claude_tokens || 0,
+        gptTokens: balanceData.gpt_tokens || 0
+      });
+    } catch (error) {
+      console.error('Error fetching token balance:', error);
+      toast.error('Failed to fetch token balance');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const deductTokens = async (model, tokensUsed) => {
-    if (!currentUser) return false;
-
-    const userRef = doc(db, 'users', currentUser.uid);
-    const userDoc = await getDoc(userRef);
-    
-    if (!userDoc.exists()) return false;
-
-    const userData = userDoc.data();
-    let newBuilderTokens = userData.builderTokens || 0;
-    let newClaudeTokens = userData.claudeTokens || 0;
-    let newGptTokens = userData.gptTokens || 0;
-
-    // Determine token deduction logic
-    if (model === 'gpt-4o') {
-      if (newGptTokens >= tokensUsed) {
-        // Use GPT tokens directly (1:1)
-        newGptTokens -= tokensUsed;
-      } else {
-        // Use Builder Tokens with multiplier
-        const requiredBT = tokensUsed * MODEL_MULTIPLIERS['gpt-4o'];
-        if (newBuilderTokens >= requiredBT) {
-          newBuilderTokens -= requiredBT;
-        } else {
-          toast.error('Insufficient tokens! Please upgrade your plan.');
-          return false;
-        }
-      }
-    } else if (model.startsWith('claude')) {
-      if (newClaudeTokens >= tokensUsed) {
-        // Use Claude tokens directly (1:1)
-        newClaudeTokens -= tokensUsed;
-      } else {
-        // Use Builder Tokens with multiplier
-        const requiredBT = tokensUsed * MODEL_MULTIPLIERS[model];
-        if (newBuilderTokens >= requiredBT) {
-          newBuilderTokens -= requiredBT;
-        } else {
-          toast.error('Insufficient tokens! Please upgrade your plan.');
-          return false;
-        }
-      }
+    if (!currentUser) {
+      toast.error('Please login to use tokens');
+      return false;
     }
 
-    // Update tokens in Firestore
     try {
-      await updateDoc(userRef, {
-        builderTokens: newBuilderTokens,
-        claudeTokens: newClaudeTokens,
-        gptTokens: newGptTokens,
-        totalUsage: (userData.totalUsage || 0) + tokensUsed,
-        lastUsed: new Date()
-      });
-      return true;
+      const result = await xanoClient.deductTokens(model, tokensUsed);
+      
+      if (result.success) {
+        // Update local token balance
+        setTokens(prev => ({
+          ...prev,
+          builderTokens: result.new_balance || prev.builderTokens
+        }));
+        return true;
+      } else {
+        toast.error(result.message || 'Insufficient tokens! Please upgrade your plan.');
+        return false;
+      }
     } catch (error) {
       console.error('Error deducting tokens:', error);
-      toast.error('Failed to deduct tokens');
+      toast.error(error.message || 'Failed to deduct tokens');
       return false;
     }
   };
 
   const addTokens = async (type, amount) => {
-    if (!currentUser) return false;
-
-    const userRef = doc(db, 'users', currentUser.uid);
-    const userDoc = await getDoc(userRef);
-    
-    if (!userDoc.exists()) return false;
-
-    const userData = userDoc.data();
-    const updates = {};
-
-    switch (type) {
-      case 'builder':
-        updates.builderTokens = (userData.builderTokens || 0) + amount;
-        break;
-      case 'claude':
-        updates.claudeTokens = (userData.claudeTokens || 0) + amount;
-        break;
-      case 'gpt':
-        updates.gptTokens = (userData.gptTokens || 0) + amount;
-        break;
-      default:
-        return false;
-    }
-
+    // This would typically be handled by a payment system
+    // For demo purposes, we'll simulate it
     try {
-      await updateDoc(userRef, updates);
+      setTokens(prev => ({
+        ...prev,
+        [type === 'builder' ? 'builderTokens' : type === 'claude' ? 'claudeTokens' : 'gptTokens']: 
+          prev[type === 'builder' ? 'builderTokens' : type === 'claude' ? 'claudeTokens' : 'gptTokens'] + amount
+      }));
       toast.success(`Added ${amount.toLocaleString()} ${type} tokens!`);
       return true;
     } catch (error) {
@@ -161,6 +108,7 @@ export const TokenProvider = ({ children }) => {
     loading,
     deductTokens,
     addTokens,
+    refreshBalance: fetchTokenBalance,
     MODEL_MULTIPLIERS
   };
 
